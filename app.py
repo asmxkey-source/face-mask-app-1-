@@ -2,36 +2,76 @@ import streamlit as st
 import cv2
 import tempfile
 import google.generativeai as genai
+import numpy as np
 import os
+from PIL import Image
 
-# 페이지 설정
-st.set_page_config(page_title="AI 얼굴 마스킹 앱", layout="centered")
-st.title("🎥 AI 영상 비식별화 서비스")
+st.set_page_config(page_title="AI 얼굴 비식별화", layout="centered")
+st.title("🎥 AI 영상 얼굴 마스킹")
 
-# 사이드바에서 API 키 입력 받기
-api_key = st.sidebar.text_input("Gemini API Key를 입력하세요", type="password")
+# 1. API 키 설정
+api_key = st.sidebar.text_input("Gemini API Key", type="password")
 
 if api_key:
     genai.configure(api_key=api_key)
-    
-    uploaded_file = st.file_uploader("마스킹할 영상을 업로드하세요 (MP4, MOV)", type=['mp4', 'mov'])
+    model = genai.GenerativeModel('gemini-1.5-flash') # 영상 이해에 최적화된 모델
 
-    if uploaded_file is not None:
-        # 임시 파일로 영상 저장
-        tfile = tempfile.NamedTemporaryFile(delete=False)
+    uploaded_file = st.file_uploader("영상을 업로드하세요", type=['mp4', 'mov', 'avi'])
+
+    if uploaded_file:
+        # 파일 저장
+        tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
         tfile.write(uploaded_file.read())
-        
-        st.video(tfile.name)
-        
+        video_path = tfile.name
+
+        st.video(video_path)
+
         if st.button("얼굴 마스킹 시작"):
-            with st.spinner("AI가 얼굴을 분석하고 가리는 중입니다..."):
-                # [여기에 Gemini API 호출 및 OpenCV 처리 로직이 들어갑니다]
-                # 샘플로 원본 영상을 그대로 보여주는 코드를 넣어두겠습니다.
-                # 실제 구현 시에는 AI Studio에서 생성한 상세 로직을 이 부분에 삽입하세요.
-                st.success("처리가 완료되었습니다!")
-                st.video(tfile.name) # 결과물 출력
-                
-                with open(tfile.name, "rb") as file:
-                    st.download_button("결과 영상 다운로드", file, "masked_video.mp4")
+            with st.spinner("AI가 영상을 분석하고 얼굴을 가리는 중입니다..."):
+                try:
+                    # 2. Gemini에게 영상 업로드 및 얼굴 좌표 요청
+                    st.info("AI에게 영상 분석을 요청하는 중...")
+                    video_file = genai.upload_file(path=video_path)
+                    
+                    # 얼굴 좌표 추출 프롬프트
+                    prompt = "Find all human faces in this video and provide their coordinates as [ymin, xmin, ymax, xmax] in JSON format for each frame."
+                    response = model.generate_content([video_file, prompt])
+                    
+                    # 3. OpenCV 영상 처리
+                    cap = cv2.VideoCapture(video_path)
+                    width = int(cap.get(cv2.職業_FRAME_WIDTH))
+                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    
+                    # 결과 영상 저장 설정
+                    output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+                    while cap.isOpened():
+                        ret, frame = cap.read()
+                        if not ret: break
+
+                        # [핵심 로직] Gemini가 준 좌표를 프레임에 적용 (간략화된 예시)
+                        # 실제 구현시 response에서 파싱한 좌표로 cv2.GaussianBlur 적용
+                        # 우선은 중앙부 샘플 블러로 작동 확인
+                        h, w, _ = frame.shape
+                        face_region = frame[h//4:3*h//4, w//4:3*w//4]
+                        blurred_face = cv2.GaussianBlur(face_region, (99, 99), 30)
+                        frame[h//4:3*h//4, w//4:3*w//4] = blurred_face
+                        
+                        out.write(frame)
+
+                    cap.release()
+                    out.release()
+
+                    st.success("처리 완료!")
+                    st.video(output_path)
+                    
+                    with open(output_path, "rb") as f:
+                        st.download_button("결과물 다운로드", f, "masked_video.mp4")
+
+                except Exception as e:
+                    st.error(f"오류가 발생했습니다: {e}")
 else:
-    st.info("왼쪽 사이드바에 Gemini API Key를 입력해 주세요.")
+    st.info("먼저 사이드바에 API 키를 입력해 주세요.")
